@@ -3,11 +3,13 @@
 import os
 import discord
 from discord.ext import commands
+from discord.ext.commands import CommandNotFound
 import logging
 import asyncio
 import itertools
 import sys
 import traceback
+import random
 from async_timeout import timeout
 from functools import partial
 from youtube_dl import YoutubeDL
@@ -41,7 +43,6 @@ def init():
 		fc = tmp_command.split(', ')
 		command.append(fc)
 		fc = []
-		#command.append(command_inputData[i][12:].rstrip('\n'))     #command[0] ~ [28] : 명령어
 
 	del command[0]
 
@@ -157,7 +158,7 @@ class MusicPlayer:
 		"""Our main player loop."""
 		await self.bot.wait_until_ready()
 
-		while not self.bot.is_closed():
+		while True:
 			self.next.clear()
 
 			try:
@@ -249,17 +250,9 @@ class Music(commands.Cog):
 
 		return player
 
-	#@commands.command(name='!connect', aliases=['join'])   #채널 접속
-	@commands.command(name='!connect', aliases=command[0])   #채널 접속
+	@commands.command(name=command[0][0], aliases=command[0][1:])   #채널 접속
 	async def connect_(self, ctx, *, channel: discord.VoiceChannel=None):
-		"""Connect to voice.
-		Parameters
-		------------
-		channel: discord.VoiceChannel [Optional]
-			The channel to connect to. If a channel is not specified, an attempt to join the voice channel you are in
-			will be made.
-		This command also handles moving the bot to different channels.
-		"""
+
 		if not channel:
 			try:
 				channel = ctx.author.voice.channel
@@ -283,8 +276,7 @@ class Music(commands.Cog):
 
 		await ctx.send(f'Connected to : **{channel}**', delete_after=20)
 
-	#@commands.command(name='!play', aliases=['sing'])     #재생
-	@commands.command(name='!play', aliases=command[1])     #재생
+	@commands.command(name=command[1][0], aliases=command[1][1:])     #재생
 	async def play_(self, ctx, *, search: str):
 		"""Request a song and add it to the queue.
 		This command attempts to join a valid voice channel if the bot is not already in one.
@@ -299,7 +291,8 @@ class Music(commands.Cog):
 		vc = ctx.voice_client
 
 		if not vc:
-			await ctx.invoke(self.connect_)
+			#await ctx.invoke(self.connect_)
+			return await ctx.send(':mute: 음성채널에 접속후 사용해주세요.', delete_after=20)
 
 		player = self.get_player(ctx)
 
@@ -309,8 +302,7 @@ class Music(commands.Cog):
 
 		await player.queue.put(source)
 
-	#@commands.command(name='!pause')    #일시정지
-	@commands.command(name='!pause', aliases=command[2])    #일시정지
+	@commands.command(name=command[2][0], aliases=command[2][1:])    #일시정지
 	async def pause_(self, ctx):
 		"""Pause the currently playing song."""
 		vc = ctx.voice_client
@@ -323,8 +315,7 @@ class Music(commands.Cog):
 		vc.pause()
 		await ctx.send(f'**`{ctx.author}`**: 음악 정지!')
 
-	#@commands.command(name='!resume')   #다시재생
-	@commands.command(name='!resume', aliases=command[3])   #다시재생
+	@commands.command(name=command[3][0], aliases=command[3][1:])   #다시재생
 	async def resume_(self, ctx):
 		"""Resume the currently paused song."""
 		vc = ctx.voice_client
@@ -337,8 +328,7 @@ class Music(commands.Cog):
 		vc.resume()
 		await ctx.send(f'**`{ctx.author}`**: 음악 다시 재생!')
 
-	#@commands.command(name='!skip')   #스킵
-	@commands.command(name='!skip', aliases=command[4])   #스킵
+	@commands.command(name=command[4][0], aliases=command[4][1:])   #스킵
 	async def skip_(self, ctx):
 		"""Skip the song."""
 		vc = ctx.voice_client
@@ -354,8 +344,7 @@ class Music(commands.Cog):
 		vc.stop()
 		await ctx.send(f'**`{ctx.author}`**: 음악 스킵!')
 
-	#@commands.command(name='!queue', aliases=['q', 'playlist'])   #재생목록
-	@commands.command(name='!queue', aliases=command[5])   #재생목록
+	@commands.command(name=command[5][0], aliases=command[5][1:])   #재생목록
 	async def queue_info(self, ctx):
 		"""Retrieve a basic queue of upcoming songs."""
 		vc = ctx.voice_client
@@ -368,15 +357,17 @@ class Music(commands.Cog):
 			return await ctx.send(':mute: 더 이상 재생할 곡이 없습니다.')
 
 		# Grab up to 5 entries from the queue...
-		upcoming = list(itertools.islice(player.queue._queue, 0, 5))
-
-		fmt = '\n'.join(f'**`{_["title"]}`**' for _ in upcoming)
-		embed = discord.Embed(title=f'Upcoming - Next {len(upcoming)}', description=fmt)
+		upcoming = list(itertools.islice(player.queue._queue, 0, 10))
+		fmt = ''
+		for i in range(len(upcoming)):
+			fmt += '**' + str(i+1) + ' : ' + upcoming[i]['title'] + '**\n'
+		
+		#fmt = '\n'.join(f'**`{_["title"]}`**' for _ in upcoming)
+		embed = discord.Embed(title=f'Upcoming - Next {len(upcoming)}', description=fmt, color=0xff00ff)
 
 		await ctx.send(embed=embed)
 
-	#@commands.command(name='!now_playing', aliases=['np', 'current', 'currentsong', 'playing'])   #현재 재생음악
-	@commands.command(name='!now_playing', aliases=command[6])   #현재 재생음악
+	@commands.command(name=command[6][0], aliases=command[6][1:])   #현재 재생음악
 	async def now_playing_(self, ctx):
 		"""Display information about the currently playing song."""
 		vc = ctx.voice_client
@@ -396,15 +387,8 @@ class Music(commands.Cog):
 
 		player.np = await ctx.send(f'**Now Playing : ** `{vc.source.title}` 'f'  requested by  `{vc.source.requester}`')
 
-	#@commands.command(name='!volume', aliases=['vol'])   #볼륨조정
-	@commands.command(name='!volume', aliases=command[7])   #볼륨조정
+	@commands.command(name=command[7][0], aliases=command[7][1:])   #볼륨조정
 	async def change_volume(self, ctx, *, vol: float):
-		"""Change the player volume.
-		Parameters
-		------------
-		volume: float or int [Required]
-			The volume to set the player to in percentage. This must be between 1 and 100.
-		"""
 		vc = ctx.voice_client
 
 		if not vc or not vc.is_connected():
@@ -421,8 +405,7 @@ class Music(commands.Cog):
 		player.volume = vol / 100
 		await ctx.send(f'**`{ctx.author}`**: 님이 볼륨을 **{vol}%** 로 조정하였습니다.')
 
-	#@commands.command(name='stop')   #정지
-	@commands.command(name='stop', aliases=command[8])   #정지
+	@commands.command(name=command[8][0], aliases=command[8][1:])   #정지
 	async def stop_(self, ctx):
 		"""Stop the currently playing song and destroy the player.
 		!Warning!
@@ -435,6 +418,18 @@ class Music(commands.Cog):
 
 		await self.cleanup(ctx.guild)
 
+	@commands.command(name=command[9][0], aliases=command[9][1:])   #삭제
+	async def remove_(self, ctx, *, msg : int):
+		player = self.get_player(ctx)
+
+		# If download is False, source will be a dict which will be used later to regather the stream.
+		# If download is True, source will be a discord.FFmpegPCMAudio with a VolumeTransformer.
+		
+		tmp = player.queue._queue[msg-1]
+
+		player.queue._queue.remove(tmp)
+
+		await ctx.send(f'**`{ctx.author}`**: 님이 **`{str(tmp["title"])}`** 을/를 재생목록에서 삭제하였습니다.')
 
 bot = commands.Bot(command_prefix=commands.when_mentioned_or(""),description='일상뮤직봇')
 
@@ -444,6 +439,13 @@ async def on_ready():
 	print(bot.user.name)
 	print(bot.user.id)
 	print("===========")
+	
+@bot.event
+async def on_command_error(ctx, error):
+	if isinstance(error, CommandNotFound):
+		return
+	raise error
 
 bot.add_cog(Music(bot))
 bot.run(access_token)
+
