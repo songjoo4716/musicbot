@@ -106,7 +106,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 		'audioformat': 'mp3',
 		'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
 		'restrictfilenames': True,
-		'noplaylist': True,
+		'noplaylist': False,
 		'nocheckcertificate': True,
 		'ignoreerrors': False,
 		'logtostderr': False,
@@ -127,7 +127,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 	def __init__(self, ctx: commands.Context, source: discord.FFmpegPCMAudio, *, data: dict, volume: float = 0.5):
 		super().__init__(source, volume)
-
 		self.requester = ctx.author
 		self.channel = ctx.channel
 		self.data = data
@@ -151,34 +150,71 @@ class YTDLSource(discord.PCMVolumeTransformer):
 		return '**{0.title}** by **{0.uploader}**'.format(self)
 
 	@classmethod
-	async def create_source(cls, ctx: commands.Context, search: str, *, loop: asyncio.BaseEventLoop = None):
+	async def create_source(cls, bot, ctx: commands.Context, search: str, *, loop: asyncio.BaseEventLoop = None):
 		loop = loop or asyncio.get_event_loop()
 
-		partial = functools.partial(cls.ytdl.extract_info, search, download=False, process=False)
-		data = await loop.run_in_executor(None, partial)
+		if "http" not in search:
+			partial = functools.partial(cls.ytdl.extract_info, f"ytsearch5:{search}", download=False, process=False)
 
-		if data is None:
-			raise YTDLError('Couldn\'t find anything that matches `{}`'.format(search))
+			data = await loop.run_in_executor(None, partial)
 
-		if 'entries' not in data:
-			process_info = data
-		else:
-			process_info = None
-			for entry in data['entries']:
-				if entry:
-					process_info = entry
-					break
-
-			if process_info is None:
+			if data is None:
 				raise YTDLError('Couldn\'t find anything that matches `{}`'.format(search))
 
-		webpage_url = process_info['webpage_url']
+			emoji_list : list = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "🚫"]
+			song_list_str : str = ""
+			cnt : int = 0
+			song_index : int = 0
+
+			for data_info in data["entries"]:
+				cnt += 1
+				if 'title' not in data_info:
+					data_info['title'] = f"{search} - 제목 정보 없음"
+				song_list_str += f"`{cnt}.` [**{data_info['title']}**](https://www.youtube.com/watch?v={data_info['url']})\n"
+
+			embed = discord.Embed(description= song_list_str)
+			embed.set_footer(text=f"10초 안에 미선택시 취소됩니다.")
+
+			song_list_message = await ctx.send(embed = embed)
+
+			for emoji in emoji_list:
+				await song_list_message.add_reaction(emoji)
+
+			def reaction_check(reaction, user):
+				return (reaction.message.id == song_list_message.id) and (user.id == ctx.author.id) and (str(reaction) in emoji_list)
+			try:
+				reaction, user = await bot.wait_for('reaction_add', check = reaction_check, timeout = 10)
+			except asyncio.TimeoutError:
+				reaction = "🚫"
+
+			for emoji in emoji_list:
+				await song_list_message.remove_reaction(emoji, bot.user)
+
+			await song_list_message.delete(delay = 10)
+			
+			if str(reaction) == "1️⃣":
+				song_index = 0
+			elif str(reaction) == "2️⃣":
+				song_index = 1
+			elif str(reaction) == "3️⃣":
+				song_index = 2
+			elif str(reaction) == "4️⃣":
+				song_index = 3
+			elif str(reaction) == "5️⃣":
+				song_index = 4
+			else:
+				return False
+			
+			result_url = f"https://www.youtube.com/watch?v={data['entries'][song_index]['url']}"
+		else:
+			result_url = search
+
+		webpage_url = result_url
 		partial = functools.partial(cls.ytdl.extract_info, webpage_url, download=False)
 		processed_info = await loop.run_in_executor(None, partial)
-
 		if processed_info is None:
 			raise YTDLError('Couldn\'t fetch `{}`'.format(webpage_url))
-
+		
 		if 'entries' not in processed_info:
 			info = processed_info
 		else:
@@ -205,7 +241,7 @@ class Song:
 
 	def create_embed(self):
 		embed = (discord.Embed(title='Now playing',
-							description='```css\n{0.source.title}\n```'.format(self),
+							description='**```fix\n{0.source.title}\n```**'.format(self),
 							color=discord.Color.blurple())
 				.add_field(name='Duration', value=self.source.duration)
 				.add_field(name='Requested by', value=self.requester.mention)
@@ -234,6 +270,14 @@ class SongQueue(asyncio.Queue):
 
 	def shuffle(self):
 		random.shuffle(self._queue)
+
+	def select(self, index : int, loop : bool = False):
+		for i in range(index-1):
+			if not loop:
+				del self._queue[0]
+			else:
+				self._queue.append(self._queue[0])
+				del self._queue[0]
 
 	def remove(self, index: int):
 		del self._queue[index]
@@ -284,7 +328,7 @@ class VoiceState:
 			self.next.clear()
 
 			if self.loop and self.current is not None:
-				source1 = await YTDLSource.create_source(self._ctx, self.current.source.url, loop=self.bot.loop)
+				source1 = await YTDLSource.create_source(self.bot, self._ctx, self.current.source.url, loop=self.bot.loop)
 				song1 = Song(source1)
 				await self.songs.put(song1)
 			else:
@@ -299,7 +343,8 @@ class VoiceState:
 
 			self.current.source.volume = self._volume
 			self.voice.play(self.current.source, after=self.play_next_song)
-			await self.current.source.channel.send(embed=self.current.create_embed())
+			play_info_msg = await self.current.source.channel.send(embed=self.current.create_embed())
+			await play_info_msg.delete(delay = 20)
 
 			await self.next.wait()
 
@@ -430,11 +475,15 @@ class Music(commands.Cog):
 			await ctx.message.add_reaction('⏹')
 
 	@commands.command(name=command[5][0], aliases=command[5][1:])
-	async def _skip(self, ctx: commands.Context):
+	async def _skip(self, ctx: commands.Context, *, args: int = 1):
 		if not ctx.voice_state.is_playing:
 			return await ctx.send(':mute: 현재 재생중인 음악이 없습니다.')
 
 		await ctx.message.add_reaction('⏭')
+
+		if args != 1:
+			ctx.voice_state.songs.select(args, ctx.voice_state.loop)
+
 		ctx.voice_state.skip()
 		'''	
 		voter = ctx.message.author
@@ -457,7 +506,7 @@ class Music(commands.Cog):
 
 		if len(ctx.voice_state.songs) == 0:
 			return await ctx.send(':mute: 재생목록이 없습니다.')
-
+		
 		items_per_page = 10
 		pages = math.ceil(len(ctx.voice_state.songs) / items_per_page)
 
@@ -468,8 +517,13 @@ class Music(commands.Cog):
 		for i, song in enumerate(ctx.voice_state.songs[start:end], start=start):
 			queue += '`{0}.` [**{1.source.title}**]({1.source.url})\n'.format(i + 1, song)
 
-		embed = (discord.Embed(description='**{} tracks:**\n\n{}'.format(len(ctx.voice_state.songs), queue))
-				.set_footer(text='Viewing page {}/{}'.format(page, pages)))
+		if ctx.voice_state.loop:
+			embed = discord.Embed(title = '🔁  Now playing', description='**```fix\n{0.source.title}\n```**'.format(ctx.voice_state.current))
+		else:
+			embed = discord.Embed(title = 'Now playing', description='**```fix\n{0.source.title}\n```**'.format(ctx.voice_state.current))
+		embed.add_field(name ='\u200B\n**{} tracks:**\n'.format(len(ctx.voice_state.songs)), value = f"\u200B\n{queue}")
+		embed.set_thumbnail(url=ctx.voice_state.current.source.thumbnail)
+		embed.set_footer(text='Viewing page {}/{}'.format(page, pages))
 		await ctx.send(embed=embed)
 
 	@commands.command(name=command[11][0], aliases=command[11][1:])
@@ -512,7 +566,9 @@ class Music(commands.Cog):
 
 		async with ctx.typing():
 			try:
-				source = await YTDLSource.create_source(ctx, search, loop=self.bot.loop)
+				source = await YTDLSource.create_source(self.bot, ctx, search, loop=self.bot.loop)
+				if not source:
+					return await ctx.send(f"노래 재생/예약이 취소 되었습니다.")
 			except YTDLError as e:
 				await ctx.send('에러가 발생했습니다 : {}'.format(str(e)))
 			else:
@@ -520,147 +576,15 @@ class Music(commands.Cog):
 
 				await ctx.voice_state.songs.put(song)
 				await ctx.send('재생목록 추가 : {}'.format(str(source)))
-				
+
 	@commands.command(name=command[13][0], aliases=command[13][1:])
-	async def race_(self, ctx: commands.Context, *, msg: str):
-		#msg = ctx.message.content[len(ctx.invoked_with)+1:]
-		race_info = []
-		fr = []
-		racing_field = []
-		str_racing_field = []
-		cur_pos = []
-		race_val = []
-		random_pos = []
-		racing_result = []
-		output = ':camera: :camera: :camera: 신나는 레이싱! :camera: :camera: :camera:\n'
-		#racing_unit = [':giraffe:', ':elephant:', ':tiger2:', ':hippopotamus:', ':crocodile:',':leopard:',':ox:', ':sheep:', ':pig2:',':dromedary_camel:',':dragon:',':rabbit2:'] #동물스킨
-		racing_unit = [':red_car:', ':taxi:', ':bus:', ':trolleybus:', ':race_car:', ':police_car:', ':ambulance:', ':fire_engine:', ':minibus:', ':truck:', ':articulated_lorry:', ':tractor:', ':scooter:', ':manual_wheelchair:', ':motor_scooter:', ':auto_rickshaw:', ':blue_car:', ':bike:', ':helicopter:', ':steam_locomotive:']  #탈것스킨
-		random.shuffle(racing_unit) 
-		racing_member = msg.split(" ")
+	async def clear_channel_(self, ctx: commands.Context, *, msg: int = 1):
+		try:
+			msg = int(msg)
+		except:
+			await ctx.send(f"```지우고 싶은 줄수는 [숫자]로 입력해주세요!```")
+		await ctx.channel.purge(limit = msg)
 
-		'''
-		racing_unit = []
-		emoji = discord.Emoji
-		emoji = ctx.message.guild.emojis
-		for j in range(len(tmp_racing_unit)):
-			racing_unit.append(':' + tmp_racing_unit[j] + ':')
-			for i in range(len(emoji)):
-				if emoji[i].name == tmp_racing_unit[j].strip(":"):
-					racing_unit[j] = '<:' + tmp_racing_unit[j] + ':' + str(emoji[i].id) + '>'
-		random.shuffle(racing_unit)
-		'''
-		field_size = 60
-		tmp_race_tab = 35 - len(racing_member)
-		if len(racing_member) <= 1:
-			await ctx.send('레이스 인원이 2명보다 작습니다.')
-			return
-		elif len(racing_member) >= 13:
-			await ctx.send('레이스 인원이 12명 초과입니다.')
-			return
-		else :
-			race_val = random.sample(range(tmp_race_tab, tmp_race_tab+len(racing_member)), len(racing_member))
-			random.shuffle(race_val)
-			for i in range(len(racing_member)):
-				fr.append(racing_member[i])
-				fr.append(racing_unit[i])
-				fr.append(race_val[i])
-				race_info.append(fr)
-				fr = []
-				for i in range(field_size):
-					fr.append(" ")
-				racing_field.append(fr)
-				fr = []
-
-			for i in range(len(racing_member)):
-				racing_field[i][0] = "|"
-				racing_field[i][field_size-2] = race_info[i][1]
-				if len(race_info[i][0]) > 5:
-					racing_field[i][field_size-1] = "| " + race_info[i][0][:5] + '..'
-				else:
-					racing_field[i][field_size-1] = "| " + race_info[i][0]
-				str_racing_field.append("".join(racing_field[i]))
-				cur_pos.append(field_size-2)
-
-			for i in range(len(racing_member)):
-				output +=  str_racing_field[i] + '\n'
-
-			result_race = await ctx.send(output + ':traffic_light: 3초 후 경주가 시작됩니다!')
-			await asyncio.sleep(1)
-			await result_race.edit(content = output + ':traffic_light: 2초 후 경주가 시작됩니다!')
-			await asyncio.sleep(1)
-			await result_race.edit(content = output + ':traffic_light: 1초 후 경주가 시작됩니다!')
-			await asyncio.sleep(1)
-			await result_race.edit(content = output + ':checkered_flag:  경주 시작!')								
-
-			for i in range(len(racing_member)):
-				test = random.sample(range(2,field_size-2), race_info[i][2])
-				while len(test) != tmp_race_tab + len(racing_member)-1 :
-					test.append(1)
-				test.append(1)
-				test.sort(reverse=True)
-				random_pos.append(test)
-
-			for j in range(len(random_pos[0])):
-				if j%2 == 0:
-					output =  ':camera: :camera_with_flash: :camera: 신나는 레이싱! :camera_with_flash: :camera: :camera_with_flash:\n'
-				else :
-					output =  ':camera_with_flash: :camera: :camera_with_flash: 신나는 레이싱! :camera: :camera_with_flash: :camera:\n'
-				str_racing_field = []
-				for i in range(len(racing_member)):
-					temp_pos = cur_pos[i]
-					racing_field[i][random_pos[i][j]], racing_field[i][temp_pos] = racing_field[i][temp_pos], racing_field[i][random_pos[i][j]]
-					cur_pos[i] = random_pos[i][j]
-					str_racing_field.append("".join(racing_field[i]))
-
-				await asyncio.sleep(1) 
-
-				for i in range(len(racing_member)):
-					output +=  str_racing_field[i] + '\n'
-
-				await result_race.edit(content = output + ':checkered_flag:  경주 시작!')
-
-			for i in range(len(racing_field)):
-				fr.append(race_info[i][0])
-				fr.append((race_info[i][2]) - tmp_race_tab + 1)
-				racing_result.append(fr)
-				fr = []
-
-			result = sorted(racing_result, key=lambda x: x[1])
-
-			result_str = ''
-			for i in range(len(result)):
-				if result[i][1] == 1:
-					result[i][1] = ':first_place:'
-				elif result[i][1] == 2:
-					result[i][1] = ':second_place:'
-				elif result[i][1] == 3:
-					result[i][1] = ':third_place:'
-				elif result[i][1] == 4:
-					result[i][1] = ':four:'
-				elif result[i][1] == 5:
-					result[i][1] = ':five:'
-				elif result[i][1] == 6:
-					result[i][1] = ':six:'
-				elif result[i][1] == 7:
-					result[i][1] = ':seven:'
-				elif result[i][1] == 8:
-					result[i][1] = ':eight:'
-				elif result[i][1] == 9:
-					result[i][1] = ':nine:'
-				elif result[i][1] == 10:
-					result[i][1] = ':keycap_ten:'
-				else:
-					result[i][1] = ':x:'
-				result_str += result[i][1] + "  " + result[i][0] + "  "
-
-			#print(result)
-			await asyncio.sleep(1)
-			await result_race.edit(content = output + ':tada: 경주 종료!\n' + result_str)
-
-	@commands.command(name="!hellothisisverification")
-	async def verification_(self, ctx: commands.Context, *, msg: str=None):
-		await ctx.send('일상#7025(chochul12@gmail.com')
-		
 	@_summon.before_invoke
 	@_play.before_invoke
 	async def ensure_voice_state(self, ctx: commands.Context):
@@ -680,7 +604,7 @@ class Music(commands.Cog):
 		command_list += ','.join(command[2]) + ' [검색어] or [url]\n'     #!재생
 		command_list += ','.join(command[3]) + '\n'     #!일시정지
 		command_list += ','.join(command[4]) + '\n'     #!다시재생
-		command_list += ','.join(command[5]) + '\n'     #!스킵
+		command_list += ','.join(command[5]) + ' (숫자)\n'     #!스킵
 		command_list += ','.join(command[6]) + ' 혹은 [명령어] + [숫자]\n'     #!목록
 		command_list += ','.join(command[7]) + '\n'     #!현재재생
 		command_list += ','.join(command[8]) + ' [숫자 1~100]\n'     #!볼륨
@@ -688,7 +612,7 @@ class Music(commands.Cog):
 		command_list += ','.join(command[10]) + '\n'     #!삭제
 		command_list += ','.join(command[11]) + '\n'     #!섞기
 		command_list += ','.join(command[14]) + '\n'     #!
-		command_list += ','.join(command[13]) + ' 아이디1 아이디2 아이디3 ....\n'     #!경주
+		command_list += ','.join(command[13]) + ' [숫자]\n'     #!경주
 		embed = discord.Embed(
 				title = "----- 명령어 -----",
 				description= '```' + command_list + '```',
